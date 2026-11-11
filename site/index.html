@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VPN для себя и близких</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="config.js"></script>
+<style>
+  :root { --bg:#0e1420; --card:#18202f; --line:#27324a; --text:#e8edf6; --mute:#8f9bb3; --acc:#3ddc97; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width:720px; margin:0 auto; padding:24px 16px 64px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:28px; }
+  .logo { font-weight:700; letter-spacing:.04em; }
+  .logo span { color:var(--acc); }
+  h1 { font-size:30px; line-height:1.2; margin:0 0 8px; }
+  h2 { font-size:19px; margin:36px 0 12px; }
+  p.lead { color:var(--mute); margin:0 0 8px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:16px; margin-bottom:12px; }
+  .plan { display:flex; justify-content:space-between; align-items:center; gap:12px; cursor:pointer; }
+  .plan.sel { border-color:var(--acc); }
+  .price { font-weight:700; white-space:nowrap; }
+  .mute { color:var(--mute); font-size:14px; }
+  button { font:inherit; border:0; border-radius:10px; padding:11px 18px; cursor:pointer;
+           background:var(--acc); color:#06281a; font-weight:600; }
+  button.ghost { background:transparent; color:var(--text); border:1px solid var(--line); font-weight:400; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .qty button { width:42px; padding:9px 0; }
+  .qty b { min-width:28px; text-align:center; }
+  .key-url { font:13px ui-monospace, Menlo, monospace; word-break:break-all; color:var(--mute);
+             background:#101726; border-radius:8px; padding:8px; margin:8px 0; }
+  .msg { padding:12px 14px; border-radius:10px; background:#12281f; border:1px solid #1f5c43; margin:12px 0; }
+  .msg.err { background:#2b1518; border-color:#6b2a32; }
+  .hide { display:none; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">VPN<span>•</span>SHOP</div>
+    <div id="authbox"><button class="ghost" id="login">Войти через Telegram</button></div>
+  </header>
+
+  <h1>VPN для себя и близких</h1>
+  <p class="lead">Отдельный ключ на каждое устройство. Оплата в USDT, ключ приходит сразу.</p>
+  <div id="msg" class="msg hide"></div>
+
+  <h2>Тарифы</h2>
+  <div id="plans"></div>
+  <div class="card">
+    <div class="row qty" style="justify-content:space-between">
+      <div>Устройств<div class="mute">на каждое свой ключ</div></div>
+      <div class="row"><button class="ghost" id="minus">−</button><b id="qty">1</b><button class="ghost" id="plus">+</button></div>
+    </div>
+  </div>
+  <div class="row" style="justify-content:space-between">
+    <div>К оплате: <b id="total">—</b></div>
+    <button id="buy">Купить</button>
+  </div>
+
+  <div id="cabinet" class="hide">
+    <h2>Мои ключи</h2>
+    <div id="keys"></div>
+  </div>
+</div>
+
+<script>
+const API = window.API || "";
+const $ = id => document.getElementById(id);
+let token = null, plans = [], sel = null, qty = 1, info = {};
+try { token = localStorage.getItem("token"); } catch (e) {}
+
+function say(text, err) {
+  const m = $("msg"); m.textContent = text; m.className = "msg" + (err ? " err" : "");
+}
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, { ...opts, headers: {
+    "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) } });
+  if (r.status === 401) { setToken(null); throw new Error("Сначала войдите"); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || "Ошибка сервера");
+  return data;
+}
+function setToken(t) {
+  token = t;
+  try { t ? localStorage.setItem("token", t) : localStorage.removeItem("token"); } catch (e) {}
+  $("authbox").innerHTML = t ? '<button class="ghost" id="logout">Выйти</button>'
+                             : '<button class="ghost" id="login">Войти через Telegram</button>';
+  if (t) $("logout").onclick = () => { setToken(null); };
+  else $("login").onclick = login;
+  $("cabinet").classList.toggle("hide", !t);
+  if (t) loadKeys();
+}
+function renderPlans() {
+  $("plans").innerHTML = "";
+  plans.forEach(p => {
+    const d = document.createElement("div");
+    d.className = "card plan" + (sel === p.id ? " sel" : "");
+    d.innerHTML = `<div><b></b><div class="mute">${p.days} дней, за одно устройство</div></div>
+                   <div class="price">${p.usdt} USDT</div>`;
+    d.querySelector("b").textContent = p.title;
+    d.onclick = () => { sel = p.id; renderPlans(); };
+    $("plans").appendChild(d);
+  });
+  const p = plans.find(x => x.id === sel);
+  $("qty").textContent = qty;
+  $("total").textContent = p ? (Math.round(p.usdt * qty * 100) / 100) + " USDT" : "—";
+}
+async function login() {
+  try {
+    if (info.demo && !info.bot) {            // демо без бота
+      setToken((await api("/api/auth/demo", { method: "POST" })).token); return;
+    }
+    const s = await api("/api/auth/start", { method: "POST" });
+    if (!s.link) return say("Бот ещё не подключён", true);
+    window.open(s.link, "_blank");
+    say("Откройте бота и нажмите «Запустить» — вход подтвердится сам.");
+    const t0 = Date.now();
+    const timer = setInterval(async () => {
+      if (Date.now() - t0 > 5 * 60000) return clearInterval(timer);
+      const c = await api("/api/auth/check?code=" + encodeURIComponent(s.code)).catch(() => ({}));
+      if (c.ok) { clearInterval(timer); setToken(c.token); say("Вы вошли."); }
+    }, 2500);
+  } catch (e) { say(e.message, true); }
+}
+async function pay(planId, n, keyId) {
+  if (!token) return login();
+  try {
+    const o = await api("/api/orders", { method: "POST",
+      body: JSON.stringify({ plan_id: planId, qty: n, key_id: keyId || null }) });
+    window.open(o.pay_url, "_blank");
+    say(`Счёт на ${o.amount} USDT создан. После оплаты ключ появится здесь и придёт в бота.`);
+    const timer = setInterval(async () => {
+      const s = await api("/api/orders/" + o.id).catch(() => ({}));
+      if (s.status === "done") { clearInterval(timer); say("Оплата получена, ключи готовы."); loadKeys(); }
+      if (s.status === "expired" || s.status === "paid_error") {
+        clearInterval(timer);
+        say(s.status === "expired" ? "Счёт истёк, создайте новый."
+            : "Оплата получена, ключ выдаётся с задержкой — мы уже разбираемся.", true);
+      }
+    }, 4000);
+  } catch (e) { say(e.message, true); }
+}
+async function loadKeys() {
+  try {
+    const keys = await api("/api/me/keys");
+    const box = $("keys"); box.innerHTML = "";
+    if (!keys.length) { box.innerHTML = '<p class="mute">Ключей пока нет.</p>'; return; }
+    keys.forEach(k => {
+      const d = document.createElement("div"); d.className = "card";
+      const until = new Date(k.expires * 1000).toLocaleDateString("ru-RU");
+      d.innerHTML = `<div class="row" style="justify-content:space-between"><b></b>
+        <span class="mute">${k.status === "active" ? "до " + until : "истёк " + until}</span></div>
+        <div class="key-url"></div>
+        <div class="row"><button class="ghost c">Скопировать</button>
+        <button class="ghost n">Переименовать</button><button class="r">Продлить</button></div>`;
+      d.querySelector("b").textContent = k.name;
+      d.querySelector(".key-url").textContent = k.url;
+      d.querySelector(".c").onclick = () => navigator.clipboard.writeText(k.url).then(() => say("Скопировано."));
+      d.querySelector(".n").onclick = async () => {
+        const name = prompt("Имя ключа (например, «Мама»)", k.name);
+        if (name) { await api(`/api/me/keys/${k.id}/rename`, { method: "POST", body: JSON.stringify({ name }) }); loadKeys(); }
+      };
+      d.querySelector(".r").onclick = () => sel ? pay(sel, 1, k.id) : say("Выберите срок в тарифах выше.", true);
+      box.appendChild(d);
+    });
+  } catch (e) { say(e.message, true); }
+}
+
+$("minus").onclick = () => { qty = Math.max(1, qty - 1); renderPlans(); };
+$("plus").onclick = () => { qty = Math.min(10, qty + 1); renderPlans(); };
+$("buy").onclick = () => sel ? pay(sel, qty) : say("Выберите тариф.", true);
+
+(async () => {
+  try {
+    info = await api("/api/info");
+    plans = await api("/api/plans");
+    sel = plans.length ? plans[0].id : null;
+    renderPlans();
+    const tg = window.Telegram && Telegram.WebApp;
+    if (tg && tg.initData) {                 // открыто внутри Telegram — входим автоматически
+      tg.ready();
+      const a = await api("/api/auth/webapp", { method: "POST", body: JSON.stringify({ init_data: tg.initData }) });
+      setToken(a.token);
+    } else setToken(token);
+  } catch (e) { say("Сервер недоступен: " + e.message, true); setToken(token); }
+})();
+</script>
+</body>
+</html>
