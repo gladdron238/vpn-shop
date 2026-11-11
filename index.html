@@ -177,6 +177,13 @@ $("plus").onclick = () => { qty = Math.min(10, qty + 1); renderPlans(); };
 $("buy").onclick = () => sel ? pay(sel, qty) : say("Выберите тариф.", true);
 
 (async () => {
+  if (window.OFFLINE) {                      // сервер ещё не подключён: показываем витрину
+    plans = window.OFFLINE.plans; sel = plans[0].id; renderPlans();
+    $("authbox").innerHTML = "";
+    say(window.OFFLINE.text);
+    $("buy").onclick = () => say(window.OFFLINE.text);
+    return;
+  }
   try {
     info = await api("/api/info");
     plans = await api("/api/plans");
