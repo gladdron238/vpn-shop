@@ -1,6 +1,8 @@
 """Главная логика: заказы, выдача и продление ключей, фоновые задачи."""
 import logging
+import tempfile
 import time
+from pathlib import Path
 
 from . import config, db, payments
 from .panel import panel
@@ -26,6 +28,19 @@ def get_or_create_user(tg_id, name=""):
         db.x("INSERT INTO users(tg_id,name,created) VALUES(?,?,?)", (tg_id, name, int(time.time())))
         u = db.one("SELECT * FROM users WHERE tg_id=?", (tg_id,))
     return u
+
+
+def sales_closed():
+    """Причина, по которой сейчас нельзя продавать, или пустая строка."""
+    if config.PANEL == "mock" and not config.DEMO:
+        # без настоящей VPN-панели ключи ненастоящие — за деньги их выдавать нельзя
+        return "Продажи временно закрыты. Загляните чуть позже."
+    return ""
+
+
+def stars_enabled():
+    # с панелью-заглушкой звёзды списались бы по-настоящему за ненастоящий ключ
+    return config.PANEL != "mock"
 
 
 def plans():
@@ -55,6 +70,10 @@ async def create_order(user, plan_id, qty, method, key_id=None):
         raise ValueError("Неверное число устройств")
     if method not in ("cryptopay", "stars"):
         raise ValueError("Неизвестный способ оплаты")
+    if sales_closed():
+        raise ValueError(sales_closed())
+    if method == "stars" and not stars_enabled():
+        raise ValueError("Оплата звёздами включится, когда подключим VPN-сервер")
 
     oid, _ = db.x(
         "INSERT INTO orders(user_id,plan_id,qty,key_id,method,status,created) VALUES(?,?,?,?,?,?,?)",
@@ -76,6 +95,14 @@ async def create_order(user, plan_id, qty, method, key_id=None):
 def order_amounts(order):
     plan = db.one("SELECT * FROM plans WHERE id=?", (order["plan_id"],))
     return round(plan["usdt"] * order["qty"], 2), plan["stars"] * order["qty"]
+
+
+HOWTO = ("Как подключиться:\n"
+         "1. Установите приложение: Hiddify (Android, iPhone, Windows, Mac), "
+         "v2rayNG (Android) или Streisand (iPhone).\n"
+         "2. Скопируйте ссылку ключа и в приложении нажмите «+» → «Добавить из буфера».\n"
+         "3. Нажмите «Подключиться».\n"
+         "Один ключ — одно устройство. Лишние ключи можно переслать близким.")
 
 
 async def fulfill(order_id, from_status="created"):
@@ -117,10 +144,13 @@ async def fulfill(order_id, from_status="created"):
             lines = [f"🔑 {k['name']} (до {fmt_date(k['expires'])}):\n{k['url']}"
                      for k in db.q("SELECT * FROM keys WHERE order_id=?", (order_id,))]
             text = "✅ Оплата получена. Ваши ключи:\n\n" + "\n\n".join(lines) + \
-                   "\n\nСкопируйте ссылку в приложение (v2rayNG, Hiddify, Streisand) " \
-                   "или перешлите её близким."
+                   "\n\n" + HOWTO
         db.x("UPDATE orders SET status='done' WHERE id=?", (order_id,))
         await notify(user["tg_id"], text)
+        usdt, stars = order_amounts(order)
+        paid = f"{usdt:g} USDT" if order["method"] == "cryptopay" else f"{stars}⭐"
+        await notify(config.ADMIN_ID, f"💰 Заказ {order_id}: {plan['title']} × {order['qty']}"
+                                      f"{' (продление)' if order['key_id'] else ''}, {paid}")
         return True
     except Exception as e:
         log.exception("fulfill %s", order_id)
@@ -177,3 +207,25 @@ async def tick():
             await notify(k["tg_id"], f"⏳ Ключ «{k['name']}» закончится через 3 дня.")
     db.x("DELETE FROM login_codes WHERE created<?", (now - 600,))
     db.x("DELETE FROM sessions WHERE created<?", (now - 30 * DAY,))
+
+    if now - int(db.get_meta("last_backup", 0)) >= DAY:
+        if await send_backup():
+            db.set_meta("last_backup", now)
+
+
+async def send_backup(chat_id=None):
+    """Отправляет копию базы владельцу в Telegram. Возвращает True, если получилось."""
+    chat_id = chat_id or config.ADMIN_ID
+    if not (bot and chat_id):
+        return False
+    from aiogram.types import FSInputFile
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / time.strftime("shop-%Y-%m-%d.db")
+        db.backup(str(path))
+        try:
+            await bot.send_document(chat_id, FSInputFile(path),
+                                    caption="🗄 Резервная копия базы. Храните её в секрете.")
+            return True
+        except Exception as e:
+            log.warning("backup: %s", e)
+            return False

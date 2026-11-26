@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS keys(
   panel_user TEXT, url TEXT, expires INTEGER, status TEXT, reminded INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS login_codes(code TEXT PRIMARY KEY, tg_id INTEGER, created INTEGER);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id INTEGER, created INTEGER);
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 """
 
 # Тарифы: цена за ОДНО устройство. Меняйте здесь до первого запуска
@@ -61,3 +62,22 @@ def x(sql, args=()):
     with _lock:
         cur = _con.execute(sql, args)
         return cur.lastrowid, cur.rowcount
+
+
+def get_meta(k, default=None):
+    row = one("SELECT v FROM meta WHERE k=?", (k,))
+    return row["v"] if row else default
+
+
+def set_meta(k, v):
+    x("INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)))
+
+
+def backup(dst):
+    """Целая копия базы в файл dst (безопасно, пока сервер работает)."""
+    out = sqlite3.connect(dst)
+    try:
+        with _lock:
+            _con.backup(out)
+    finally:
+        out.close()

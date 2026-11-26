@@ -67,6 +67,18 @@
     <h2>Мои ключи</h2>
     <div id="keys"></div>
   </div>
+
+  <h2>Как подключиться</h2>
+  <div class="card">
+    <ol style="margin:0;padding-left:20px">
+      <li>Установите приложение: <b>Hiddify</b> (Android, iPhone, Windows, Mac),
+          <b>v2rayNG</b> (Android) или <b>Streisand</b> (iPhone).</li>
+      <li>Скопируйте ссылку ключа и в приложении нажмите «+» → «Добавить из буфера».</li>
+      <li>Нажмите «Подключиться».</li>
+    </ol>
+    <p class="mute" style="margin:10px 0 0">Один ключ — одно устройство. Лишние ключи можно переслать близким.</p>
+  </div>
+  <p class="mute" id="support"></p>
 </div>
 
 <script>
@@ -189,6 +201,8 @@ $("buy").onclick = () => sel ? pay(sel, qty) : say("Выберите тариф.
     plans = await api("/api/plans");
     sel = plans.length ? plans[0].id : null;
     renderPlans();
+    if (info.support) $("support").textContent = "Поддержка: " + info.support;
+    if (info.closed) { say(info.closed); $("buy").onclick = () => say(info.closed); }
     const tg = window.Telegram && Telegram.WebApp;
     if (tg && tg.initData) {                 // открыто внутри Telegram — входим автоматически
       tg.ready();

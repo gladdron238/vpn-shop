@@ -38,9 +38,10 @@ async def lifespan(app):
     bot = None
     if config.BOT_TOKEN:
         from aiogram import Bot, Dispatcher
-        from .bot import r
+        from .bot import COMMANDS, r
         bot = Bot(config.BOT_TOKEN)
         state["bot_username"] = (await bot.get_me()).username
+        await bot.set_my_commands(COMMANDS)
         service.bot = bot
         dp = Dispatcher()
         dp.include_router(r)
@@ -50,6 +51,10 @@ async def lifespan(app):
         log.warning("BOT_TOKEN не задан — бот выключен, работает только сайт")
     if config.DEMO:
         log.warning("ВКЛЮЧЁН DEMO-РЕЖИМ: оплата понарошку. Не для боевого сервера!")
+    if service.sales_closed():
+        log.warning("PANEL=mock при DEMO=0 — продажи закрыты, пока не подключена VPN-панель")
+    if not config.ADMIN_ID:
+        log.warning("ADMIN_ID не задан — не будет уведомлений о продажах, ошибках и бэкапов")
     yield
     for t in tasks:
         t.cancel()
@@ -81,7 +86,15 @@ def current_user(authorization: str = Header(default="")):
 
 @app.get("/api/info")
 def info():
-    return {"bot": state["bot_username"], "demo": config.DEMO}
+    return {"bot": state["bot_username"], "demo": config.DEMO, "closed": service.sales_closed(),
+            "support": config.SUPPORT}
+
+
+@app.get("/api/health")
+def health():
+    """Для проверки «сервер жив» (например, бесплатным UptimeRobot)."""
+    db.one("SELECT 1")
+    return {"ok": True}
 
 
 @app.post("/api/auth/start")
