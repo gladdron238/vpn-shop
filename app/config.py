@@ -29,6 +29,9 @@ PANEL = _get("PANEL", "mock")                  # mock (без VPN-сервера
 MARZBAN_URL = _get("MARZBAN_URL").rstrip("/")
 MARZBAN_USER = _get("MARZBAN_USER")
 MARZBAN_PASS = _get("MARZBAN_PASS")
+# Какие протоколы выдавать каждому ключу (через запятую). Несколько — запасные варианты:
+# если один начнут резать, приложение переключится на другой. Должны быть включены в панели.
+MARZBAN_PROXIES = [p.strip() for p in _get("MARZBAN_PROXIES", "vless").split(",") if p.strip()]
 
 # DEMO=1 — оплата «понарошку» для проверки. На боевом сервере обязательно 0!
 DEMO = _get("DEMO", "0") == "1"
@@ -36,3 +39,8 @@ DEMO = _get("DEMO", "0") == "1"
 SITE_URL = _get("SITE_URL", "http://localhost:8000").rstrip("/")
 CORS = [o for o in _get("CORS", SITE_URL).split(",") if o]
 DB_PATH = _get("DB_PATH", str(ROOT / "data" / "shop.db"))
+
+# Адрес, с которого клиенты получают ключи (подписку). По умолчанию — адрес сайта/сервера.
+# Ссылки ключей ведут сюда, а не на VPN-сервер: сервер можно сменить, и у клиентов
+# всё обновится само, без новых ключей.
+SUB_URL = _get("SUB_URL", SITE_URL).rstrip("/")

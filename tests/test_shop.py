@@ -135,3 +135,13 @@ def test_backup(tmp_path, client):
     db.backup(str(dst))
     import sqlite3
     assert sqlite3.connect(dst).execute("SELECT COUNT(*) FROM plans").fetchone()[0] == 3
+
+
+def test_subscription_link(client, auth):
+    o = client.post("/api/orders", headers=auth, json={"plan_id": 1}).json()
+    client.get(f"/demo/pay/{o['id']}")
+    url = client.get("/api/me/keys", headers=auth).json()[-1]["url"]
+    assert url.startswith(config.SUB_URL + "/sub/") and "example.invalid" not in url
+    r = client.get(url.removeprefix(config.SUB_URL))
+    assert r.status_code == 200 and b"demo" in r.content
+    assert client.get("/sub/nope").status_code == 404

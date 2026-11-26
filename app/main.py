@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -153,7 +153,7 @@ def get_plans():
 
 @app.get("/api/me/keys")
 def my_keys(user=Depends(current_user)):
-    return [{"id": k["id"], "name": k["name"], "url": k["url"], "expires": k["expires"],
+    return [{"id": k["id"], "name": k["name"], "url": service.link(k), "expires": k["expires"],
              "status": k["status"]} for k in service.user_keys(user["id"])]
 
 
@@ -208,6 +208,21 @@ async def cryptopay_webhook(request: Request):
         if inv.get("status") == "paid" and inv.get("asset") == "USDT":
             await service.confirm_cryptopay(inv["invoice_id"], inv["amount"])
     return {"ok": True}
+
+
+@app.get("/sub/{token}")
+async def subscription(token: str, request: Request):
+    """Ссылка ключа. Приложение клиента ходит сюда, мы забираем подписку с VPN-панели."""
+    k = db.one("SELECT * FROM keys WHERE sub_token=?", (token,))
+    if not k or not k["url"]:
+        raise HTTPException(404)
+    from .panel import panel
+    try:
+        body, headers = await panel.subscription(k["url"], request.headers.get("user-agent", ""))
+    except Exception as e:
+        log.warning("sub %s: %s", k["id"], e)
+        raise HTTPException(502, "VPN-сервер временно недоступен")
+    return Response(content=body, headers=headers)
 
 
 @app.get("/demo/pay/{order_id}", response_class=HTMLResponse)

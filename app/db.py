@@ -1,4 +1,5 @@
 """База данных SQLite: один файл на диске."""
+import secrets
 import sqlite3
 import threading
 from pathlib import Path
@@ -41,6 +42,12 @@ def init():
     _con.row_factory = sqlite3.Row
     _con.execute("PRAGMA journal_mode=WAL")
     _con.executescript(SCHEMA)
+    # обновление старой базы: у каждого ключа свой секретный адрес подписки
+    if "sub_token" not in {r[1] for r in _con.execute("PRAGMA table_info(keys)")}:
+        _con.execute("ALTER TABLE keys ADD COLUMN sub_token TEXT")
+    for (kid,) in _con.execute("SELECT id FROM keys WHERE sub_token IS NULL").fetchall():
+        _con.execute("UPDATE keys SET sub_token=? WHERE id=?", (secrets.token_urlsafe(18), kid))
+    _con.execute("CREATE UNIQUE INDEX IF NOT EXISTS keys_sub ON keys(sub_token)")
     if not q("SELECT 1 FROM plans LIMIT 1"):
         for p in DEFAULT_PLANS:
             x("INSERT INTO plans(title,days,usdt,stars) VALUES(?,?,?,?)", p)

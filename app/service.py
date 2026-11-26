@@ -1,5 +1,6 @@
 """Главная логика: заказы, выдача и продление ключей, фоновые задачи."""
 import logging
+import secrets
 import tempfile
 import time
 from pathlib import Path
@@ -49,6 +50,11 @@ def plans():
 
 def user_keys(user_id):
     return db.q("SELECT * FROM keys WHERE user_id=? ORDER BY id", (user_id,))
+
+
+def link(key):
+    """Ссылка ключа для клиента: наш адрес, а не адрес VPN-сервера."""
+    return f"{config.SUB_URL}/sub/{key['sub_token']}"
 
 
 def fmt_date(ts):
@@ -131,8 +137,9 @@ async def fulfill(order_id, from_status="created"):
             for i in range(done, order["qty"]):
                 name = f"Устройство {have + i - done + 1}"
                 kid, _ = db.x(
-                    "INSERT INTO keys(user_id,order_id,name,expires,status) VALUES(?,?,?,?,?)",
-                    (user["id"], order_id, name, expires, "pending"))
+                    "INSERT INTO keys(user_id,order_id,name,expires,status,sub_token) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (user["id"], order_id, name, expires, "pending", secrets.token_urlsafe(18)))
                 pu = f"u{user['tg_id']}k{kid}"
                 try:
                     url = await panel.create(pu, expires)
@@ -141,7 +148,7 @@ async def fulfill(order_id, from_status="created"):
                     raise
                 db.x("UPDATE keys SET panel_user=?, url=?, status='active' WHERE id=?",
                      (pu, url, kid))
-            lines = [f"🔑 {k['name']} (до {fmt_date(k['expires'])}):\n{k['url']}"
+            lines = [f"🔑 {k['name']} (до {fmt_date(k['expires'])}):\n{link(k)}"
                      for k in db.q("SELECT * FROM keys WHERE order_id=?", (order_id,))]
             text = "✅ Оплата получена. Ваши ключи:\n\n" + "\n\n".join(lines) + \
                    "\n\n" + HOWTO

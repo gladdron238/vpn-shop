@@ -155,7 +155,7 @@ async def my_keys(m: Message):
         return
     for k in keys:
         state = "активен до" if k["status"] == "active" else "истёк"
-        await m.answer(f"🔑 {k['name']} — {state} {service.fmt_date(k['expires'])}\n{k['url']}",
+        await m.answer(f"🔑 {k['name']} — {state} {service.fmt_date(k['expires'])}\n{service.link(k)}",
                        reply_markup=kb([[("Продлить", f"r:{k['id']}")]]),
                        disable_web_page_preview=True)
 

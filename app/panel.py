@@ -1,6 +1,7 @@
 """Адаптер VPN-панели. Весь остальной код знает только три действия:
 создать ключ, продлить ключ, отключить ключ. Панель можно заменить здесь."""
 import secrets
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -18,6 +19,9 @@ class MockPanel:
 
     async def disable(self, username):
         return True
+
+    async def subscription(self, url, user_agent):
+        return "# demo: ненастоящий ключ\n".encode(), {"content-type": "text/plain; charset=utf-8"}
 
 
 class MarzbanPanel:
@@ -45,7 +49,8 @@ class MarzbanPanel:
     async def create(self, username, expires):
         data = await self._req("POST", "/api/user", json={
             "username": username,
-            "proxies": {"vless": {"flow": "xtls-rprx-vision"}},
+            "proxies": {p: ({"flow": "xtls-rprx-vision"} if p == "vless" else {})
+                        for p in config.MARZBAN_PROXIES},
             "expire": int(expires),
             "data_limit": 0,
         })
@@ -62,6 +67,21 @@ class MarzbanPanel:
     async def disable(self, username):
         await self._req("PUT", f"/api/user/{username}", json={"status": "disabled"})
         return True
+
+
+    async def subscription(self, url, user_agent):
+        """Скачивает подписку с панели. Берём только путь: если панель переехала
+        на другой адрес (MARZBAN_URL), старые ключи продолжают работать."""
+        path = urlsplit(url).path
+        async with httpx.AsyncClient(base_url=config.MARZBAN_URL, timeout=20) as c:
+            r = await c.get(path, headers={"User-Agent": user_agent})
+            r.raise_for_status()
+            return r.content, {k: v for k, v in r.headers.items() if k.lower() in PASS_HEADERS}
+
+
+# заголовки, по которым приложения показывают срок, трафик и как часто обновляться
+PASS_HEADERS = {"content-type", "subscription-userinfo", "profile-update-interval",
+                "profile-title", "content-disposition", "support-url", "profile-web-page-url"}
 
 
 def get_panel():
