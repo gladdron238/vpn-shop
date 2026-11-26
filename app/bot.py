@@ -17,11 +17,14 @@ COMMANDS = [BotCommand(command="start", description="Главное меню"),
             BotCommand(command="keys", description="Мои ключи"),
             BotCommand(command="help", description="Как подключиться и поддержка")]
 
-BUY, KEYS, HELP = "🛒 Купить VPN", "🔑 Мои ключи", "💬 Поддержка"
+BUY, KEYS, HELP, INVITE = "🛒 Купить VPN", "🔑 Мои ключи", "💬 Поддержка", "🎁 Пригласить"
+MENU = {BUY, KEYS, HELP, INVITE, "🌐 Кабинет"}
 
 
 def menu():
     rows = [[KeyboardButton(text=BUY), KeyboardButton(text=KEYS)], [KeyboardButton(text=HELP)]]
+    if config.REF_DAYS:
+        rows[1].append(KeyboardButton(text=INVITE))
     if config.SITE_URL.startswith("https://"):
         rows[1].append(KeyboardButton(text="🌐 Кабинет", web_app=WebAppInfo(url=config.SITE_URL)))
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -43,16 +46,44 @@ def user_of(event):
 
 @r.message(CommandStart())
 async def start(m: Message, command: CommandObject):
-    user_of(m)
     arg = command.args or ""
+    ref = int(arg[4:]) if arg.startswith("ref_") and arg[4:].isdigit() else None
+    user = service.get_or_create_user(m.from_user.id, m.from_user.full_name, ref_by=ref)
     if arg.startswith("login_"):
         # вход на сайт: спрашиваем явно, чтобы чужая ссылка не открыла кому-то ваш кабинет
         await m.answer("Войти на сайт под вашим аккаунтом?\n"
                        "Нажимайте, только если вы сами только что нажали «Войти» на сайте.",
                        reply_markup=kb([[("✅ Да, это я", f"login:{arg[6:]}")]]))
         return
-    await m.answer("Привет! Здесь можно купить VPN для себя и близких.\n"
-                   "Оплата: USDT через @CryptoBot или звёздами Telegram.", reply_markup=menu())
+    pay = "USDT через @CryptoBot или звёздами Telegram" if service.stars_enabled() \
+        else "USDT через @CryptoBot"
+    await m.answer(f"Привет! Здесь можно купить VPN для себя и близких.\nОплата: {pay}.",
+                   reply_markup=menu())
+    if service.trial_available(user):
+        await m.answer(f"Можно сначала попробовать бесплатно — {config.TRIAL_DAYS} дн.",
+                       reply_markup=kb([[("🎁 Попробовать бесплатно", "trial")]]))
+
+
+@r.callback_query(F.data == "trial")
+async def trial(c: CallbackQuery):
+    await c.answer()
+    k = await service.start_trial(user_of(c))
+    if not k:
+        await c.message.edit_text("Пробный ключ уже был выдан или сейчас недоступен. "
+                                  "Купить можно в меню «Купить VPN».")
+        return
+    await c.message.edit_text(f"🎁 Пробный ключ до {service.fmt_date(k['expires'])}:\n"
+                              f"{service.link(k)}\n\n{service.HOWTO}",
+                              disable_web_page_preview=True)
+
+
+@r.message(F.text == INVITE)
+async def invite(m: Message):
+    me = await m.bot.me()
+    n = db.one("SELECT COUNT(*) c FROM users WHERE ref_by=?", (user_of(m)["id"],))["c"]
+    await m.answer(f"Перешлите другу эту ссылку. Когда он оплатит VPN, вам добавится "
+                   f"{config.REF_DAYS} дн. бесплатно.\n\nhttps://t.me/{me.username}?start=ref_{m.from_user.id}"
+                   f"\n\nПо вашей ссылке пришло: {n}", disable_web_page_preview=True)
 
 
 @r.callback_query(F.data.startswith("login:"))
@@ -172,8 +203,12 @@ async def renew(c: CallbackQuery):
 @r.message(F.text == HELP)
 @r.message(Command("help"))
 async def support(m: Message):
-    contact = f"Вопросы и проблемы: {config.SUPPORT}" if config.SUPPORT \
-        else "Поддержка скоро появится."
+    if config.ADMIN_ID:
+        contact = "Если что-то не работает — просто напишите вопрос сюда, в этот чат. Мы ответим."
+    elif config.SUPPORT:
+        contact = f"Вопросы и проблемы: {config.SUPPORT}"
+    else:
+        contact = "Поддержка скоро появится."
     await m.answer(service.HOWTO + "\n\n" + contact)
 
 
@@ -182,16 +217,18 @@ async def support(m: Message):
 async def stats(m: Message):
     u = db.one("SELECT COUNT(*) c FROM users")["c"]
     k = db.one("SELECT COUNT(*) c FROM keys WHERE status='active'")["c"]
-    o = db.one("SELECT COUNT(*) c FROM orders WHERE status='done'")["c"]
+    o = db.one("SELECT COUNT(*) c FROM orders WHERE status='done' AND method!='trial'")["c"]
+    t = db.one("SELECT COUNT(*) c FROM orders WHERE method='trial'")["c"]
     e = db.one("SELECT COUNT(*) c FROM orders WHERE status='paid_error'")["c"]
     rev = {"cryptopay": 0.0, "stars": 0}
     month = int(time.time()) - 30 * service.DAY
-    for row in db.q("SELECT o.method, o.qty, p.usdt, p.stars FROM orders o "
-                    "JOIN plans p ON p.id=o.plan_id WHERE o.status='done' AND o.created>?", (month,)):
-        rev[row["method"]] += row["usdt"] * row["qty"] if row["method"] == "cryptopay" \
-            else row["stars"] * row["qty"]
+    for row in db.q("SELECT * FROM orders WHERE status='done' AND created>? "
+                    "AND method IN ('cryptopay','stars')", (month,)):
+        usdt, stars = service.order_amounts(row)
+        rev[row["method"]] += usdt if row["method"] == "cryptopay" else stars
     await m.answer(f"Клиентов: {u}\nАктивных ключей: {k}\nОплаченных заказов: {o}\nС ошибкой: {e}\n"
-                   f"Выручка за 30 дней (по текущим ценам): {rev['cryptopay']:g} USDT, {rev['stars']}⭐\n"
+                   f"Пробных ключей: {t}\n"
+                   f"Выручка за 30 дней: {rev['cryptopay']:g} USDT, {rev['stars']}⭐\n"
                    "Все команды: /admin")
 
 
@@ -213,7 +250,8 @@ async def admin_help(m: Message):
                    "/retry 12 — выдать ключ по заказу с ошибкой\n"
                    "/refund 12 — вернуть звёзды по заказу и отключить его ключи\n"
                    "/send текст — рассылка всем клиентам\n"
-                   "/backup — прислать копию базы (и так приходит раз в сутки)")
+                   "/backup — прислать копию базы (и так приходит раз в сутки)\n\n"
+                   "Вопросы клиентов приходят сюда. Чтобы ответить — ответьте на сообщение.")
 
 
 @r.message(Command("plans"), F.from_user.id == config.ADMIN_ID)
@@ -294,3 +332,34 @@ async def admin_refund(m: Message, command: CommandObject):
                 await m.answer(f"Ключ {k['id']} отключите в панели вручную: {e}")
     await service.notify(user["tg_id"], f"Звёзды по заказу {o['id']} возвращены.")
     await m.answer("Возврат сделан.")
+
+
+# --- поддержка через бота: клиент пишет сюда, владелец отвечает ответом на сообщение ---
+# Клиенты не видят личный аккаунт владельца.
+@r.message(F.from_user.id == config.ADMIN_ID, F.reply_to_message)
+async def admin_reply(m: Message):
+    row = db.one("SELECT tg_id FROM support_msgs WHERE msg_id=?", (m.reply_to_message.message_id,))
+    if not row:
+        return
+    try:
+        await m.bot.send_message(row["tg_id"], "💬 Ответ поддержки:")
+        await m.copy_to(row["tg_id"])
+        await m.answer("Отправлено.")
+    except Exception as e:
+        await m.answer(f"Не доставлено: {e}")
+
+
+@r.message(F.chat.type == "private", F.from_user.id != config.ADMIN_ID)
+async def to_support(m: Message):
+    if (m.text or "").startswith("/") or m.text in MENU or not config.ADMIN_ID:
+        await m.answer("Выберите действие в меню ниже.", reply_markup=menu())
+        return
+    u = user_of(m)
+    keys = db.one("SELECT COUNT(*) c FROM keys WHERE user_id=? AND status='active'", (u["id"],))["c"]
+    head = await m.bot.send_message(
+        config.ADMIN_ID, f"✉️ {m.from_user.full_name} (id {m.from_user.id}, активных ключей: {keys}). "
+                         "Чтобы ответить — ответьте на сообщение ниже.")
+    copy = await m.copy_to(config.ADMIN_ID)
+    for mid in (head.message_id, copy.message_id):
+        db.x("INSERT OR REPLACE INTO support_msgs(msg_id,tg_id) VALUES(?,?)", (mid, m.from_user.id))
+    await m.answer("Передали в поддержку, ответ придёт сюда.")

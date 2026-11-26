@@ -145,3 +145,59 @@ def test_subscription_link(client, auth):
     r = client.get(url.removeprefix(config.SUB_URL))
     assert r.status_code == 200 and b"demo" in r.content
     assert client.get("/sub/nope").status_code == 404
+
+
+def test_price_change_keeps_invoice_amount(client, auth):
+    o = client.post("/api/orders", headers=auth, json={"plan_id": 2}).json()
+    order = db.one("SELECT * FROM orders WHERE id=?", (o["id"],))
+    db.x("UPDATE plans SET usdt=usdt*10 WHERE id=2")        # владелец поднял цену
+    try:
+        assert service.order_amounts(order)[0] == o["amount"]
+        db.x("UPDATE orders SET ext_id='inv-price' WHERE id=?", (o["id"],))
+        assert run(service.confirm_cryptopay("inv-price", o["amount"])) is True
+    finally:
+        db.x("UPDATE plans SET usdt=usdt/10 WHERE id=2")
+
+
+def test_trial_once(client):
+    u = service.get_or_create_user(9001, "Новый")
+    assert service.trial_available(u)
+    k = run(service.start_trial(u))
+    assert k and k["name"] == "Пробный"
+    assert k["expires"] - time.time() <= config.TRIAL_DAYS * service.DAY
+    u = service.get_or_create_user(9001)
+    assert not service.trial_available(u)
+    assert run(service.start_trial(u)) is None
+
+
+def test_referral_bonus(client):
+    inviter = service.get_or_create_user(9100, "Друг")
+    keys = run(service.issue_keys(inviter, 0, 1, int(time.time()) + service.DAY, "Мой"))
+    before = keys[0]["expires"]
+    friend = service.get_or_create_user(9101, "Новичок", ref_by=9100)
+    assert friend["ref_by"] == inviter["id"]
+    assert service.get_or_create_user(9100, ref_by=9101)["ref_by"] is None   # старых не переписываем
+    assert service.get_or_create_user(9102, ref_by=9102)["ref_by"] is None   # сам себя нельзя
+
+    for _ in range(2):   # бонус только за первую оплату друга
+        o = run(service.create_order(friend, 1, 1, "cryptopay"))
+        run(service.fulfill(o["id"]))
+    after = db.one("SELECT expires FROM keys WHERE id=?", (keys[0]["id"],))["expires"]
+    assert after == before + config.REF_DAYS * service.DAY
+
+
+def test_referral_bonus_without_keys_goes_to_next_purchase(client):
+    inviter = service.get_or_create_user(9200)
+    friend = service.get_or_create_user(9201, ref_by=9200)
+    run(service.fulfill(run(service.create_order(friend, 1, 1, "cryptopay"))["id"]))
+    assert service.get_or_create_user(9200)["bonus_days"] == config.REF_DAYS
+    o = run(service.create_order(inviter, 1, 1, "cryptopay"))
+    run(service.fulfill(o["id"]))
+    k = db.one("SELECT * FROM keys WHERE order_id=?", (o["id"],))
+    assert k["expires"] - time.time() > (30 + config.REF_DAYS) * service.DAY - 60
+    assert service.get_or_create_user(9200)["bonus_days"] == 0
+
+
+def test_bot_handlers_import():
+    from app import bot
+    assert bot.r.message.handlers and bot.COMMANDS

@@ -44,3 +44,6 @@ DB_PATH = _get("DB_PATH", str(ROOT / "data" / "shop.db"))
 # Ссылки ключей ведут сюда, а не на VPN-сервер: сервер можно сменить, и у клиентов
 # всё обновится само, без новых ключей.
 SUB_URL = _get("SUB_URL", SITE_URL).rstrip("/")
+
+TRIAL_DAYS = int(_get("TRIAL_DAYS", "1") or 0)   # бесплатный пробный ключ на N дней, 0 = выключить
+REF_DAYS = int(_get("REF_DAYS", "7") or 0)       # бонус за приглашённого друга после его оплаты

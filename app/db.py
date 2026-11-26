@@ -24,7 +24,16 @@ CREATE TABLE IF NOT EXISTS keys(
 CREATE TABLE IF NOT EXISTS login_codes(code TEXT PRIMARY KEY, tg_id INTEGER, created INTEGER);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id INTEGER, created INTEGER);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS support_msgs(msg_id INTEGER PRIMARY KEY, tg_id INTEGER);
 """
+
+# Столбцы, добавленные позже: в старой базе они создаются сами при запуске
+NEW_COLUMNS = {
+    "keys": {"sub_token": "TEXT"},
+    "orders": {"usdt": "REAL", "stars": "INTEGER"},      # сумма, зафиксированная при заказе
+    "users": {"ref_by": "INTEGER", "trial_used": "INTEGER DEFAULT 0",
+              "bonus_days": "INTEGER DEFAULT 0"},
+}
 
 # Тарифы: цена за ОДНО устройство. Меняйте здесь до первого запуска
 # (или потом прямо в базе, таблица plans).
@@ -42,9 +51,12 @@ def init():
     _con.row_factory = sqlite3.Row
     _con.execute("PRAGMA journal_mode=WAL")
     _con.executescript(SCHEMA)
-    # обновление старой базы: у каждого ключа свой секретный адрес подписки
-    if "sub_token" not in {r[1] for r in _con.execute("PRAGMA table_info(keys)")}:
-        _con.execute("ALTER TABLE keys ADD COLUMN sub_token TEXT")
+    for table, cols in NEW_COLUMNS.items():
+        have = {r[1] for r in _con.execute(f"PRAGMA table_info({table})")}
+        for col, decl in cols.items():
+            if col not in have:
+                _con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    # у каждого ключа свой секретный адрес подписки
     for (kid,) in _con.execute("SELECT id FROM keys WHERE sub_token IS NULL").fetchall():
         _con.execute("UPDATE keys SET sub_token=? WHERE id=?", (secrets.token_urlsafe(18), kid))
     _con.execute("CREATE UNIQUE INDEX IF NOT EXISTS keys_sub ON keys(sub_token)")

@@ -20,6 +20,9 @@ class MockPanel:
     async def disable(self, username):
         return True
 
+    async def ping(self):
+        return True
+
     async def subscription(self, url, user_agent):
         return "# demo: ненастоящий ключ\n".encode(), {"content-type": "text/plain; charset=utf-8"}
 
@@ -68,6 +71,10 @@ class MarzbanPanel:
         await self._req("PUT", f"/api/user/{username}", json={"status": "disabled"})
         return True
 
+
+    async def ping(self):
+        await self._req("GET", "/api/system")
+        return True
 
     async def subscription(self, url, user_agent):
         """Скачивает подписку с панели. Берём только путь: если панель переехала
