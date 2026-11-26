@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS login_codes(code TEXT PRIMARY KEY, tg_id INTEGER, cre
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id INTEGER, created INTEGER);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS support_msgs(msg_id INTEGER PRIMARY KEY, tg_id INTEGER);
+CREATE TABLE IF NOT EXISTS gift_codes(
+  code TEXT PRIMARY KEY, days INTEGER, qty INTEGER, created INTEGER, used_by INTEGER);
 """
 
 # Столбцы, добавленные позже: в старой базе они создаются сами при запуске

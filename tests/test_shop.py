@@ -201,3 +201,37 @@ def test_referral_bonus_without_keys_goes_to_next_purchase(client):
 def test_bot_handlers_import():
     from app import bot
     assert bot.r.message.handlers and bot.COMMANDS
+
+
+def test_admin_give_free(client):
+    u = service.get_or_create_user(9300, "Мама")
+    keys = run(service.give_free(u, 30, 2))
+    assert len(keys) == 2 and all(k["status"] == "active" for k in keys)
+    assert abs(keys[0]["expires"] - (time.time() + 30 * service.DAY)) < 60
+    o = db.one("SELECT * FROM orders WHERE id=?", (keys[0]["order_id"],))
+    assert o["method"] == "gift" and o["usdt"] == 0
+    for bad in ((0, 1), (30, 99)):
+        try:
+            run(service.give_free(u, *bad))
+            assert False
+        except ValueError:
+            pass
+
+
+def test_gift_link_works_once(client):
+    code = service.new_gift_code(14, 1)
+    a = service.get_or_create_user(9400)
+    b = service.get_or_create_user(9401)
+    keys = run(service.claim_gift(a, code))
+    assert keys and keys[0]["user_id"] == a["id"]
+    assert run(service.claim_gift(b, code)) is None
+    assert run(service.claim_gift(b, "nonexistent")) is None
+
+
+def test_no_free_keys_without_panel(client, monkeypatch):
+    monkeypatch.setattr(config, "DEMO", False)
+    try:
+        run(service.give_free(service.get_or_create_user(9500), 30))
+        assert False
+    except ValueError:
+        pass

@@ -59,6 +59,52 @@ async def start_trial(user):
     return keys[0]
 
 
+async def give_free(user, days, qty=1, method="gift"):
+    """Бесплатные ключи от владельца. Возвращает список выданных ключей."""
+    if sales_closed():
+        raise ValueError("VPN-панель не подключена — ключи были бы ненастоящими")
+    if not (1 <= days <= 3650 and 1 <= qty <= MAX_QTY):
+        raise ValueError(f"Дней от 1 до 3650, устройств от 1 до {MAX_QTY}")
+    oid, _ = db.x("INSERT INTO orders(user_id,plan_id,qty,method,usdt,stars,status,created) "
+                  "VALUES(?,?,?,?,?,?,?,?)",
+                  (user["id"], 0, qty, method, 0, 0, "issuing", int(time.time())))
+    try:
+        keys = await issue_keys(user, oid, qty, int(time.time()) + days * DAY)
+    except Exception:
+        # не paid_error: /retry рассчитан на платные заказы с тарифом
+        db.x("UPDATE orders SET status='expired' WHERE id=?", (oid,))
+        raise
+    db.x("UPDATE orders SET status='done' WHERE id=?", (oid,))
+    return keys
+
+
+def new_gift_code(days, qty=1):
+    if not (1 <= days <= 3650 and 1 <= qty <= MAX_QTY):
+        raise ValueError(f"Дней от 1 до 3650, устройств от 1 до {MAX_QTY}")
+    code = secrets.token_urlsafe(9)
+    db.x("INSERT INTO gift_codes(code,days,qty,created) VALUES(?,?,?,?)",
+         (code, days, qty, int(time.time())))
+    return code
+
+
+async def claim_gift(user, code):
+    """Активирует подарочную ссылку. Каждая срабатывает один раз."""
+    _, n = db.x("UPDATE gift_codes SET used_by=? WHERE code=? AND used_by IS NULL",
+                (user["id"], code))
+    if not n:
+        return None
+    g = db.one("SELECT * FROM gift_codes WHERE code=?", (code,))
+    try:
+        return await give_free(user, g["days"], g["qty"])
+    except Exception:
+        db.x("UPDATE gift_codes SET used_by=NULL WHERE code=?", (code,))   # пусть попробует позже
+        raise
+
+
+def keys_text(keys):
+    return "\n\n".join(f"🔑 {k['name']} (до {fmt_date(k['expires'])}):\n{link(k)}" for k in keys)
+
+
 async def issue_keys(user, order_id, qty, expires, base_name="Устройство"):
     """Создаёт недостающие ключи заказа в панели. Повторный вызов не дублирует ключи."""
     have = db.one("SELECT COUNT(*) c FROM keys WHERE user_id=?", (user["id"],))["c"]

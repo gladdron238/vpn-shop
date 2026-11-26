@@ -49,6 +49,19 @@ async def start(m: Message, command: CommandObject):
     arg = command.args or ""
     ref = int(arg[4:]) if arg.startswith("ref_") and arg[4:].isdigit() else None
     user = service.get_or_create_user(m.from_user.id, m.from_user.full_name, ref_by=ref)
+    if arg.startswith("gift_"):
+        try:
+            keys = await service.claim_gift(user, arg[5:])
+        except Exception:
+            await m.answer("Не получилось выдать подарок, попробуйте позже.", reply_markup=menu())
+            return
+        await m.answer(f"🎁 Вам подарили VPN!\n\n{service.keys_text(keys)}\n\n{service.HOWTO}"
+                       if keys else "Эта подарочная ссылка уже использована.",
+                       reply_markup=menu(), disable_web_page_preview=True)
+        if keys:
+            await service.notify(config.ADMIN_ID, f"🎁 Подарок активировал {m.from_user.full_name} "
+                                                  f"(id {m.from_user.id})")
+        return
     if arg.startswith("login_"):
         # вход на сайт: спрашиваем явно, чтобы чужая ссылка не открыла кому-то ваш кабинет
         await m.answer("Войти на сайт под вашим аккаунтом?\n"
@@ -217,8 +230,10 @@ async def support(m: Message):
 async def stats(m: Message):
     u = db.one("SELECT COUNT(*) c FROM users")["c"]
     k = db.one("SELECT COUNT(*) c FROM keys WHERE status='active'")["c"]
-    o = db.one("SELECT COUNT(*) c FROM orders WHERE status='done' AND method!='trial'")["c"]
+    o = db.one("SELECT COUNT(*) c FROM orders WHERE status='done' "
+               "AND method IN ('cryptopay','stars')")["c"]
     t = db.one("SELECT COUNT(*) c FROM orders WHERE method='trial'")["c"]
+    g = db.one("SELECT COUNT(*) c FROM orders WHERE method='gift' AND status='done'")["c"]
     e = db.one("SELECT COUNT(*) c FROM orders WHERE status='paid_error'")["c"]
     rev = {"cryptopay": 0.0, "stars": 0}
     month = int(time.time()) - 30 * service.DAY
@@ -227,7 +242,7 @@ async def stats(m: Message):
         usdt, stars = service.order_amounts(row)
         rev[row["method"]] += usdt if row["method"] == "cryptopay" else stars
     await m.answer(f"Клиентов: {u}\nАктивных ключей: {k}\nОплаченных заказов: {o}\nС ошибкой: {e}\n"
-                   f"Пробных ключей: {t}\n"
+                   f"Пробных ключей: {t}, подарков: {g}\n"
                    f"Выручка за 30 дней: {rev['cryptopay']:g} USDT, {rev['stars']}⭐\n"
                    "Все команды: /admin")
 
@@ -251,7 +266,88 @@ async def admin_help(m: Message):
                    "/refund 12 — вернуть звёзды по заказу и отключить его ключи\n"
                    "/send текст — рассылка всем клиентам\n"
                    "/backup — прислать копию базы (и так приходит раз в сутки)\n\n"
+                   "Бесплатно:\n"
+                   "/give 123456789 30 — ключ на 30 дней клиенту с этим ID\n"
+                   "/give 123456789 30 2 — то же, 2 устройства\n"
+                   "/give 30 — ответом на сообщение клиента в поддержку, ID не нужен\n"
+                   "/addtime 123456789 7 — добавить 7 дней к ключу клиента\n"
+                   "/gift 30 — одноразовая ссылка-подарок для любого человека\n\n"
                    "Вопросы клиентов приходят сюда. Чтобы ответить — ответьте на сообщение.")
+
+
+def target_and_numbers(m: Message, args):
+    """Кому (Telegram ID из команды или из сообщения, на которое ответили) и числа после."""
+    nums = [int(a) for a in args.split() if a.isdigit()]
+    if len(nums) != len(args.split()):
+        return None, []
+    if m.reply_to_message:
+        row = db.one("SELECT tg_id FROM support_msgs WHERE msg_id=?",
+                     (m.reply_to_message.message_id,))
+        if row:
+            return row["tg_id"], nums
+    if len(nums) >= 2:              # без ответа на сообщение первое число — Telegram ID
+        return nums[0], nums[1:]
+    return None, nums
+
+
+@r.message(Command("give"), F.from_user.id == config.ADMIN_ID)
+async def admin_give(m: Message, command: CommandObject):
+    tg_id, nums = target_and_numbers(m, command.args or "")
+    if not tg_id or not 1 <= len(nums) <= 2:
+        await m.answer("Пример: /give 123456789 30 (ID клиента, дней) или /give 123456789 30 2 "
+                       "(ещё и число устройств). ID клиента виден в его сообщениях в поддержку.\n"
+                       "Если человек ещё не заходил в бота — используйте /gift 30.")
+        return
+    user = db.one("SELECT * FROM users WHERE tg_id=?", (tg_id,))
+    if not user:
+        await m.answer("Этот человек ещё не запускал бота, ему не дойдёт сообщение. "
+                       "Сделайте ссылку-подарок: /gift " + " ".join(map(str, nums)))
+        return
+    try:
+        keys = await service.give_free(user, nums[0], nums[1] if len(nums) > 1 else 1)
+    except Exception as e:
+        await m.answer(f"Не получилось: {e}")
+        return
+    await service.notify(tg_id, f"🎁 Вам подарили VPN!\n\n{service.keys_text(keys)}\n\n{service.HOWTO}")
+    await m.answer(f"Готово: {len(keys)} ключ(а) на {nums[0]} дн. для {user['name'] or tg_id}.")
+
+
+@r.message(Command("addtime"), F.from_user.id == config.ADMIN_ID)
+async def admin_addtime(m: Message, command: CommandObject):
+    tg_id, nums = target_and_numbers(m, command.args or "")
+    user = db.one("SELECT * FROM users WHERE tg_id=?", (tg_id,)) if tg_id else None
+    if not user or len(nums) != 1 or not 1 <= nums[0] <= 3650:
+        await m.answer("Пример: /addtime 123456789 7 — добавить 7 дней к ключу клиента "
+                       "(или ответом на его сообщение: /addtime 7)")
+        return
+    if not db.one("SELECT 1 FROM keys WHERE user_id=? AND panel_user IS NOT NULL", (user["id"],)):
+        await m.answer("У клиента нет ключей. Выдайте новый: /give " + f"{tg_id} {nums[0]}")
+        return
+    try:
+        where = await service.add_days(user, nums[0])
+    except Exception as e:
+        await m.answer(f"Не получилось: {e}")
+        return
+    await service.notify(tg_id, f"🎁 Вам добавили {nums[0]} дн. {where}.")
+    await m.answer(f"Готово: +{nums[0]} дн. {where}.")
+
+
+@r.message(Command("gift"), F.from_user.id == config.ADMIN_ID)
+async def admin_gift(m: Message, command: CommandObject):
+    nums = [int(a) for a in (command.args or "").split() if a.isdigit()]
+    if not 1 <= len(nums) <= 2:
+        await m.answer("Пример: /gift 30 — ссылка на ключ на 30 дней, /gift 30 3 — на 3 устройства")
+        return
+    try:
+        code = service.new_gift_code(nums[0], nums[1] if len(nums) > 1 else 1)
+    except ValueError as e:
+        await m.answer(str(e))
+        return
+    me = await m.bot.me()
+    await m.answer(f"🎁 Ссылка-подарок на {nums[0]} дн."
+                   f"{f', устройств: {nums[1]}.' if len(nums) > 1 else ''} "
+                   f"Сработает один раз — перешлите её человеку:\n\n"
+                   f"https://t.me/{me.username}?start=gift_{code}", disable_web_page_preview=True)
 
 
 @r.message(Command("plans"), F.from_user.id == config.ADMIN_ID)
